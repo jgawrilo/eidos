@@ -2,7 +2,9 @@ package org.clulab.wm.eidos.groundings
 
 import java.util.{Collection => JCollection, Map => JMap}
 
-import org.clulab.processors.Processor
+import org.clulab.processors.{Document, Processor, Sentence}
+import org.clulab.processors.clu.CluProcessor
+import org.clulab.processors.shallownlp.ShallowNLPProcessor
 import org.clulab.wm.eidos.utils.FileUtils.getTextFromResource
 import org.yaml.snakeyaml.Yaml
 import org.yaml.snakeyaml.constructor.Constructor
@@ -47,7 +49,7 @@ object DomainOntology {
   val FIELD = "OntologyNode"
   val NAME = "name"
   val EXAMPLES = "examples"
-  val DESCRIPTION = "description" // TODO: Turn this into descriptions with an S
+  val DESCRIPTION = "descriptions"
 
   // This is mostly here to capture proc so that it doesn't have to be passed around.
   class DomainOntologyBuilder(name: String, ontologyPath: String, proc: Processor, filter: Boolean) {
@@ -61,15 +63,41 @@ object DomainOntology {
       new DomainOntology(name, ontologyNodes)
     }
 
-    protected def realFiltered(text: String): Seq[String] =
-        proc.annotate(text).sentences.flatMap { sentence =>
-          sentence.words.zip(sentence.tags.get).filter { wordAndPos =>
-            // Filter by POS tags which need to be kept (Nouns, Adjectives, and Verbs).
-            wordAndPos._2.contains("NN") ||
-                wordAndPos._2.contains("JJ") ||
-                wordAndPos._2.contains("VB")
-          }.map(_._1) // Get only the words.
-        }
+    protected val getSentences: (String => Array[Sentence]) = proc match {
+      // Earlier, a complete annotation was performed.
+      // val sentences = proc.annotate(text).sentences
+      // Now we just go through the POS tagging stage, but the procedure is
+      // different for different kinds of processors.
+      case proc: CluProcessor => (text => {
+        val doc = proc.mkDocument(proc.preprocessText(text))
+
+        // This is the key difference.  Lemmatization must happen first.
+        proc.lemmatize(doc)
+        proc.tagPartsOfSpeech(doc)
+        doc.sentences
+      })
+      case proc: ShallowNLPProcessor => (text => {
+        val doc = proc.mkDocument(proc.preprocessText(text))
+
+        if (doc.sentences.nonEmpty)
+          proc.tagPartsOfSpeech(doc)
+        // Lemmatization, if needed, would happen afterwards.
+        doc.sentences
+      })
+    }
+
+    protected def realFiltered(text: String): Seq[String] = {
+      val sentences = getSentences(text)
+
+      sentences.flatMap { sentence =>
+        sentence.words.zip(sentence.tags.get).filter { wordAndPos =>
+          // Filter by POS tags which need to be kept (Nouns, Adjectives, and Verbs).
+          wordAndPos._2.contains("NN") ||
+            wordAndPos._2.contains("JJ") ||
+            wordAndPos._2.contains("VB")
+        }.map(_._1) // Get only the words.
+      }
+    }
 
     protected def fakeFiltered(text: String): Seq[String] = text.split(" +")
 
@@ -110,10 +138,6 @@ object DomainOntology {
 }
 
 // These are just here for when behavior might have to start differing.
-object ToyOntology {
-  def apply(name: String, ontologyPath: String, proc: Processor, filter: Boolean = true) = DomainOntology(name, ontologyPath, proc, filter)
-}
-
 object UNOntology {
   def apply(name: String, ontologyPath: String, proc: Processor, filter: Boolean = true) = DomainOntology(name, ontologyPath, proc, filter)
 }
